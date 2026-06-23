@@ -51,12 +51,44 @@ async function apiMe() {
   return res.json();
 }
 
+/* ── Sessions ────────────────────────────────────── */
+
+async function apiListSessions() {
+  const res = await apiFetch(`${API_BASE}/api/sessions`);
+  if (!res.ok) throw new Error("Erro ao carregar sessoes.");
+  return res.json();
+}
+
+async function apiCreateSession() {
+  const res = await apiFetch(`${API_BASE}/api/sessions`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+  if (!res.ok) throw new Error("Erro ao criar sessao.");
+  return res.json();
+}
+
+async function apiGetSessionMessages(sessionId) {
+  const res = await apiFetch(`${API_BASE}/api/sessions/${sessionId}/messages`);
+  if (!res.ok) throw new Error("Erro ao carregar mensagens.");
+  return res.json();
+}
+
+async function apiUpdateSessionTitle(sessionId, title) {
+  const res = await apiFetch(`${API_BASE}/api/sessions/${sessionId}/title`, {
+    method: "PUT",
+    body: JSON.stringify({ title }),
+  });
+  if (!res.ok) throw new Error("Erro ao atualizar titulo.");
+  return res.json();
+}
+
 /* ── Chat ────────────────────────────────────────── */
 
-async function sendMessageStream({ message, history, onDelta, signal }) {
+async function sendMessageStream({ message, sessionId, history, onDelta, onDone, signal }) {
   const response = await apiFetch(`${API_BASE}/api/chat/stream`, {
     method: "POST",
-    body: JSON.stringify({ message, history }),
+    body: JSON.stringify({ message, session_id: sessionId, history }),
     signal,
   });
 
@@ -104,6 +136,10 @@ async function sendMessageStream({ message, history, onDelta, signal }) {
 
       if (payload.delta) {
         onDelta(payload.delta);
+      }
+
+      if (payload.done && onDone) {
+        onDone(payload);
       }
     }
   }

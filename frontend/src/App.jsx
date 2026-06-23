@@ -7,7 +7,7 @@ function createMessageId() {
 /* ── Tela de login / cadastro ──────────────────── */
 
 function AuthPage({ onAuthSuccess }) {
-  const [mode, setMode] = useState("login"); // "login" | "signup"
+  const [mode, setMode] = useState("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -43,46 +43,17 @@ function AuthPage({ onAuthSuccess }) {
         <p className="auth-subtitle">
           {mode === "login" ? "Entre com sua conta" : "Crie sua conta"}
         </p>
-
         {error && <div className="auth-error">{error}</div>}
-
         <form onSubmit={handleSubmit} className="auth-form">
-          <input
-            type="email"
-            placeholder="Email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            required
-            autoFocus
-          />
-          <input
-            type="password"
-            placeholder="Senha (min. 8 caracteres)"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-            minLength={mode === "signup" ? 8 : 1}
-          />
-          <button type="submit" disabled={loading}>
-            {loading ? "Aguarde..." : mode === "login" ? "Entrar" : "Criar conta"}
-          </button>
+          <input type="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} required autoFocus />
+          <input type="password" placeholder="Senha (min. 8 caracteres)" value={password} onChange={(e) => setPassword(e.target.value)} required minLength={mode === "signup" ? 8 : 1} />
+          <button type="submit" disabled={loading}>{loading ? "Aguarde..." : mode === "login" ? "Entrar" : "Criar conta"}</button>
         </form>
-
         <p className="auth-toggle">
           {mode === "login" ? (
-            <>
-              Nao tem conta?{" "}
-              <button className="link-btn" onClick={toggleMode}>
-                Cadastre-se
-              </button>
-            </>
+            <>Nao tem conta? <button className="link-btn" onClick={toggleMode}>Cadastre-se</button></>
           ) : (
-            <>
-              Ja tem conta?{" "}
-              <button className="link-btn" onClick={toggleMode}>
-                Fazer login
-              </button>
-            </>
+            <>Ja tem conta? <button className="link-btn" onClick={toggleMode}>Fazer login</button></>
           )}
         </p>
       </div>
@@ -90,16 +61,14 @@ function AuthPage({ onAuthSuccess }) {
   );
 }
 
-/* ── Chat propriamente dito ────────────────────── */
+/* ── Chat com sessoes ─────────────────────────── */
 
 function ChatApp({ userEmail, onLogout }) {
-  const [messages, setMessages] = useState([
-    {
-      id: createMessageId(),
-      role: "assistant",
-      content: "Bem-vindo ao ChatLLM Lab. Como posso ajudar voce hoje?",
-    },
-  ]);
+  const [sessions, setSessions] = useState([]);
+  const [activeSessionId, setActiveSessionId] = useState(null);
+  const [messages, setMessages] = useState([]);
+  const [sidebarLoading, setSidebarLoading] = useState(true);
+  const [messagesLoading, setMessagesLoading] = useState(false);
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -118,10 +87,50 @@ function ChatApp({ userEmail, onLogout }) {
   }, [messages]);
 
   useEffect(() => {
-    return () => {
-      abortControllerRef.current?.abort();
-    };
+    return () => { abortControllerRef.current?.abort(); };
   }, []);
+
+  // Carrega sessoes ao montar
+  const loadSessions = useCallback(async () => {
+    try {
+      const data = await apiListSessions();
+      setSessions(data.sessions);
+      if (data.sessions.length > 0 && !activeSessionId) {
+        setActiveSessionId(data.sessions[0].id);
+      }
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSidebarLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadSessions();
+  }, [loadSessions]);
+
+  // Carrega mensagens ao trocar de sessao
+  useEffect(() => {
+    if (!activeSessionId) {
+      setMessages([]);
+      return;
+    }
+    setMessagesLoading(true);
+    setError("");
+    apiGetSessionMessages(activeSessionId)
+      .then((data) => {
+        const formatted = data.messages.map((m, i) => ({
+          id: `${activeSessionId}-${i}-${Date.now()}`,
+          role: m.role,
+          content: m.content,
+        }));
+        setMessages(formatted.length > 0 ? formatted : [
+          { id: createMessageId(), role: "assistant", content: "Bem-vindo ao ChatLLM Lab. Como posso ajudar voce hoje?" },
+        ]);
+      })
+      .catch((err) => setError(err.message))
+      .finally(() => setMessagesLoading(false));
+  }, [activeSessionId]);
 
   const onStop = () => {
     abortControllerRef.current?.abort();
@@ -132,17 +141,13 @@ function ChatApp({ userEmail, onLogout }) {
   const onSubmit = async (event) => {
     event.preventDefault();
     const cleaned = text.trim();
-    if (!cleaned || busy) return;
+    if (!cleaned || busy || !activeSessionId) return;
 
     setError("");
     const userMessage = { id: createMessageId(), role: "user", content: cleaned };
     const assistantMessageId = createMessageId();
 
-    setMessages((prev) => [
-      ...prev,
-      userMessage,
-      { id: assistantMessageId, role: "assistant", content: "" },
-    ]);
+    setMessages((prev) => [...prev, userMessage, { id: assistantMessageId, role: "assistant", content: "" }]);
     setText("");
     setBusy(true);
     const abortController = new AbortController();
@@ -151,16 +156,21 @@ function ChatApp({ userEmail, onLogout }) {
     try {
       await sendMessageStream({
         message: cleaned,
+        sessionId: activeSessionId,
         history: chatHistory,
         signal: abortController.signal,
         onDelta: (delta) => {
           setMessages((prev) =>
-            prev.map((msg) =>
-              msg.id === assistantMessageId
-                ? { ...msg, content: `${msg.content}${delta}` }
-                : msg
-            )
+            prev.map((msg) => msg.id === assistantMessageId ? { ...msg, content: `${msg.content}${delta}` } : msg)
           );
+        },
+        onDone: (payload) => {
+          // Atualiza titulo se veio no evento done
+          if (payload.title) {
+            setSessions((prev) =>
+              prev.map((s) => s.id === activeSessionId ? { ...s, title: payload.title } : s)
+            );
+          }
         },
       });
 
@@ -197,6 +207,25 @@ function ChatApp({ userEmail, onLogout }) {
     }
   };
 
+  const handleCreateSession = async () => {
+    if (busy) return;
+    setError("");
+    try {
+      const newSession = await apiCreateSession();
+      setSessions((prev) => [newSession, ...prev]);
+      setActiveSessionId(newSession.id);
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const handleSelectSession = (sessionId) => {
+    if (busy) {
+      onStop();
+    }
+    setActiveSessionId(sessionId);
+  };
+
   const handleLogout = async () => {
     setLoggingOut(true);
     try {
@@ -209,63 +238,68 @@ function ChatApp({ userEmail, onLogout }) {
   };
 
   return (
-    <main className="app-shell">
-      <header className="app-header">
-        <div className="brand">ChatLLM Lab</div>
-        <div className="header-user">
-          <span className="header-email" title={userEmail}>{userEmail}</span>
-          <button className="logout-btn" onClick={handleLogout} disabled={loggingOut}>
-            {loggingOut ? "Saindo..." : "Sair"}
-          </button>
-        </div>
-      </header>
-
-      <section className="messages" aria-live="polite" ref={messagesRef}>
-        <div className="messages-inner">
-          {messages.map((msg) => (
-            <article key={msg.id} className={`bubble ${msg.role}`}>
-              <MessageContent content={msg.content} />
-            </article>
-          ))}
-        </div>
-      </section>
-
-      <Composer
-        text={text}
-        busy={busy}
-        error={error}
-        onChangeText={setText}
-        onSubmit={onSubmit}
-        onStop={onStop}
+    <div className="app-layout">
+      <Sidebar
+        sessions={sessions}
+        activeSessionId={activeSessionId}
+        onSelectSession={handleSelectSession}
+        onCreateSession={handleCreateSession}
+        loading={sidebarLoading}
       />
 
-      <div className="warning-banner">Lembre-se, voce precisa focar no experimento!!!</div>
-    </main>
+      <main className="app-main">
+        <header className="app-header">
+          <div className="brand">ChatLLM Lab</div>
+          <div className="header-user">
+            <span className="header-email" title={userEmail}>{userEmail}</span>
+            <button className="logout-btn" onClick={handleLogout} disabled={loggingOut}>
+              {loggingOut ? "Saindo..." : "Sair"}
+            </button>
+          </div>
+        </header>
+
+        <section className="messages" aria-live="polite" ref={messagesRef}>
+          <div className="messages-inner">
+            {messagesLoading && <div className="messages-loading">Carregando mensagens...</div>}
+            {!messagesLoading && messages.map((msg) => (
+              <article key={msg.id} className={`bubble ${msg.role}`}>
+                <MessageContent content={msg.content} />
+              </article>
+            ))}
+          </div>
+        </section>
+
+        <Composer
+          text={text}
+          busy={busy}
+          error={error}
+          onChangeText={setText}
+          onSubmit={onSubmit}
+          onStop={onStop}
+        />
+
+        <div className="warning-banner">Lembre-se, voce precisa focar no experimento!!!</div>
+      </main>
+    </div>
   );
 }
 
 /* ── App raiz ──────────────────────────────────── */
 
 function App() {
-  const [user, setUser] = useState(null); // null = carregando, false = nao logado, {email} = logado
+  const [user, setUser] = useState(null);
   const [initialLoading, setInitialLoading] = useState(true);
 
   useEffect(() => {
-    apiMe().then((data) => {
-      setUser(data ? { email: data.email } : false);
-    }).catch(() => {
-      setUser(false);
-    }).finally(() => {
-      setInitialLoading(false);
-    });
+    apiMe().then((data) => setUser(data ? { email: data.email } : false))
+      .catch(() => setUser(false))
+      .finally(() => setInitialLoading(false));
   }, []);
 
   if (initialLoading) {
     return (
       <div className="auth-page">
-        <div className="auth-card">
-          <p className="auth-subtitle">Carregando...</p>
-        </div>
+        <div className="auth-card"><p className="auth-subtitle">Carregando...</p></div>
       </div>
     );
   }
